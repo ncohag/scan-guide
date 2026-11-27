@@ -61,6 +61,19 @@ label.chk{display:flex;align-items:center;gap:8px}
     <div class="row"><button class="pri" id="b-pick">Open plan file</button><button id="b-demo">Demo plan</button></div>
     <input type="file" id="f-plan" accept=".json,application/json">
   </div>
+  <div class="card">
+    <h2>Quick plan for any object</h2>
+    <p class="small dim">Rings sized to the object: a scout ring, low / mid / high rings and a few top-down shots.</p>
+    <div class="grid2 small" style="margin:8px 0">
+      <label>Name<br><input id="q-name" value="object" style="width:100%;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#0e1114;color:var(--text)"></label>
+      <label>Units<br><select id="q-unit" style="width:100%;font-size:16px;padding:8px;border-radius:8px;background:#0e1114;color:var(--text);border:1px solid var(--line)"><option value="0.01">cm</option><option value="0.0254">inches</option><option value="1">m</option></select></label>
+      <label>Length (front to back)<br><input id="q-l" type="number" inputmode="decimal" value="15" style="width:100%;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#0e1114;color:var(--text)"></label>
+      <label>Width<br><input id="q-w" type="number" inputmode="decimal" value="15" style="width:100%;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#0e1114;color:var(--text)"></label>
+      <label>Height<br><input id="q-h" type="number" inputmode="decimal" value="10" style="width:100%;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#0e1114;color:var(--text)"></label>
+      <label class="chk" style="align-self:end"><input type="checkbox" id="q-table" checked> on a table / raised</label>
+    </div>
+    <button class="pri" id="b-quick" style="width:100%">Make plan</button>
+  </div>
   <div class="card" id="c-resume" style="display:none">
     <h2>Resume</h2>
     <p class="small dim" id="t-resume"></p>
@@ -118,6 +131,7 @@ label.chk{display:flex;align-items:center;gap:8px}
   </div>
   <div class="row">
     <button id="b-prev">◀</button>
+    <button id="b-phase" style="flex:2">Aim ▸</button>
     <button class="ok" id="b-shoot" style="flex:3">Take shot</button>
     <button id="b-next">▶</button>
   </div>
@@ -150,7 +164,7 @@ const ALIGN_YAW = 8, ALIGN_PITCH = 6, STEADY_MS = 600, STEADY_DEG = 1.5;
 const S = {                                                    // app state
   plan: null, key: "", shots: [], idx: 0, groups: {}, front: null,
   done: {}, cam: null, track: null, heading: null, pitch: null, sim: false,
-  lastMove: 0, prev: null, shooting: false
+  lastMove: 0, prev: null, shooting: false, phase: "walk", lastIdx: -1, userAng: null, inPlaceSince: 0
 };
 
 // ---------------------------------------------------------------- storage
@@ -210,6 +224,32 @@ function demoPlan() {
   shots.push({ id: "G01", group: "gap", x: -0.6, y: 0.3, z: 0.1, yaw: 315, pitch: 40, note: "underside, middle (reach under the object, phone near the ground)" });
   return { object: { name: "demo_cannon", preset: "cannon", length: L, width: W, height: H }, shots, checklist: [] };
 }
+function quickPlan(name, L, W, H) {
+  // camera ~ 65° wide: stand far enough that the object fills ~70% of the frame on the scout ring,
+  // closer (half that) on the detail rings
+  const big = Math.max(L, W, H), tanh = Math.tan(rad(32));
+  const Rs = Math.max(L, W) / 2 + Math.max(0.25, big / (2 * tanh * 0.7));
+  const Rd = Math.max(L, W) / 2 + Math.max(0.15, big / (2 * tanh * 1.1));
+  const shots = [];
+  const ring = (g, tag, R, z, aimZ, n) => {
+    for (let i = 0; i < n; i++) {
+      const a = 180 + i * 360 / n;                       // start behind the object, where you calibrate
+      const x = R * Math.cos(rad(a)), y = R * Math.sin(rad(a));
+      shots.push({ id: tag + String(i + 1).padStart(2, "0"), group: g, x: +x.toFixed(3), y: +y.toFixed(3), z: +z.toFixed(3),
+        yaw: (a + 180) % 360, pitch: +deg(Math.atan2(aimZ - z, R)).toFixed(1) });
+    }
+  };
+  ring("scout", "S", Rs, H * 0.6 + 0.05, H / 2, 16);
+  ring("low", "L", Rd, Math.max(0.02, H * 0.15), H * 0.35, 24);
+  ring("mid", "M", Rd, H * 0.6, H * 0.5, 24);
+  ring("high", "H", Rd * 0.85, H + Rd * 0.8, H * 0.55, 18);
+  for (let i = 0; i < 4; i++) {                          // top-down
+    const a = 180 + i * 90, r = Math.max(L, W) * 0.2;
+    shots.push({ id: "T0" + (i + 1), group: "top", x: +(r * Math.cos(rad(a))).toFixed(3), y: +(r * Math.sin(rad(a))).toFixed(3),
+      z: +(H + big * 1.3 + 0.1).toFixed(3), yaw: (a + 180) % 360, pitch: -80, note: "hold the phone over the object, camera down" });
+  }
+  return { object: { name, preset: "quick", length: L, width: W, height: H }, shots, checklist: [] };
+}
 function setPlan(plan) {
   if (!plan || !Array.isArray(plan.shots) || !plan.shots.length) throw new Error("no shots in this file");
   for (const s of plan.shots) for (const k of ["x", "y", "z", "yaw", "pitch"]) if (typeof s[k] !== "number") throw new Error(`shot ${s.id || "?"} has no ${k}`);
@@ -226,6 +266,13 @@ $("f-plan").onchange = async e => {
   e.target.value = "";
 };
 $("b-demo").onclick = () => { setPlan(demoPlan()); setupScreen(); };
+$("b-quick").onclick = () => {
+  const u = +$("q-unit").value, L = +$("q-l").value * u, W = +$("q-w").value * u, H = +$("q-h").value * u;
+  if (!(L > 0 && W > 0 && H > 0)) return toast("Enter length, width and height");
+  const p = quickPlan(($("q-name").value || "object").replace(/[^\w-]+/g, "_"), L, W, H);
+  p.object.raised = $("q-table").checked;
+  setPlan(p); setupScreen();
+};
 $("b-resume").onclick = () => { setupScreen(); };
 $("b-forget").onclick = () => { localStorage.removeItem("scanguide"); $("c-resume").style.display = "none"; };
 
@@ -288,14 +335,23 @@ function calLoop() {
 }
 $("b-setfront").onclick = () => {
   if (S.heading == null) return toast("No motion data yet: tap 'Allow motion + camera' first, or skip");
-  S.front = S.heading; save(); toast("Front set"); goShoot();
+  S.front = S.heading;
+  startNearMe(180);           // you calibrate from behind the object
+  save(); toast("Front set"); goShoot();
 };
 $("b-skipcal").onclick = () => { S.front = null; goShoot(); };
 
 // ---------------------------------------------------------------- shoot
 function heightWord(z) {
+  const o = (S.plan && S.plan.object) || {}, H = o.height || 1;
+  if (o.raised || H < 0.8) {                                   // describe relative to the object itself
+    const r = z / H;
+    return r < 0.12 ? "level with its base" : r < 0.45 ? "low, about a third of its height" : r < 0.8 ? "about half its height" :
+      r < 1.15 ? "level with its top" : z < H + 0.6 * Math.max(o.length || H, o.width || H) ? "a bit above it, looking down" : "well above it, looking down";
+  }
   return z < 0.25 ? "on the ground" : z < 0.6 ? "knee height" : z < 1.0 ? "waist height" : z < 1.45 ? "chest height" : z < 1.8 ? "eye level" : z < 2.2 ? "arms up" : "on the pole";
 }
+const fmtLen = m => m < 1 ? `${Math.round(m * 100)} cm` : `${m.toFixed(1)} m`;
 function shotGeom(s) {
   const ang = (deg(Math.atan2(s.y, s.x)) + 360) % 360;          // clockwise from the front
   const dist = Math.hypot(s.x, s.y);
@@ -308,6 +364,19 @@ function sideWord(a) {
   const names = ["in front", "front-right", "on the right side", "back-right", "behind", "back-left", "on the left side", "front-left"];
   return names[Math.round(a / 45) % 8];
 }
+function startNearMe(ang) {
+  // keep group order; inside each group, start with the not-yet-done shot nearest to you
+  const groups = [...new Set(S.shots.map(t => t.group || "shots"))];
+  const out = [];
+  for (const g of groups) {
+    const list = S.shots.filter(t => (t.group || "shots") === g);
+    let k = 0, best = 1e9;
+    list.forEach((t, i) => { const d = Math.abs(wrap(shotGeom(t).ang - ang)); if (!S.done[shotKey(t)] && d < best) { best = d; k = i; } });
+    out.push(...list.slice(k), ...list.slice(0, k));
+    ang = out.length ? shotGeom(out[out.length - 1]).ang : ang;
+  }
+  S.shots = out; S.idx = Math.max(0, S.shots.findIndex(t => !S.done[shotKey(t)])); S.lastIdx = -1;
+}
 function goShoot() { show("s-shoot"); }
 
 function render() {
@@ -315,12 +384,18 @@ function render() {
   const g = shotGeom(s);
   $("t-prog").textContent = `${S.idx + 1} / ${S.shots.length}`;
   $("t-grp").textContent = s.group || "";
-  const where = g.inside ? `under / inside the outline, ${g.dist.toFixed(1)} m from the centre` :
-    `${g.gap.toFixed(1)} m out from the object, ${sideWord(g.ang)}`;
-  $("t-stand").innerHTML = `${where} <span class="dim">(${Math.round(g.ang)}° clockwise from the front; see map)</span><br>Phone ${s.z.toFixed(2)} m up: ${heightWord(s.z)}`;
+  const where = g.inside ? `under / over the object, ${fmtLen(g.dist)} from its centre` :
+    `${fmtLen(g.gap)} out from the object, ${sideWord(g.ang)}`;
+  const o = S.plan.object || {};
+  $("t-stand").innerHTML = `${where} <span class="dim">(${Math.round(g.ang)}° clockwise from the front)</span><br>Phone ${heightWord(s.z)}` +
+    (o.raised || (o.height || 1) < 0.8 ? "" : ` <span class="dim">(${s.z.toFixed(2)} m)</span>`);
   $("t-note").textContent = (s.note || "") + (S.done[shotKey(s)] ? "  ✓ taken" : "");
   $("b-shoot").textContent = S.done[shotKey(s)] ? "Retake" : "Take shot";
   drawMap(s);
+  const prev = S.shots[S.lastIdx];
+  const moved = !prev || Math.abs(wrap(shotGeom(s).ang - shotGeom(prev).ang)) > 15 || Math.abs(Math.hypot(s.x, s.y) - Math.hypot(prev.x, prev.y)) > 0.3;
+  if (S.lastIdx !== S.idx) setPhase(moved ? "walk" : "aim");
+  S.lastIdx = S.idx;
 }
 const shotKey = s => S.key + "/" + s.id;
 
@@ -335,11 +410,22 @@ function drawMap(s) {
   x.strokeStyle = "#9aa5b1"; x.lineWidth = 3; x.beginPath(); const [fx, fy] = P(L / 2, 0); x.moveTo(fx, fy); x.lineTo(fx, fy - 14); x.stroke();
   for (const t of S.shots) { const [px, py] = P(t.x, t.y); x.fillStyle = S.done[shotKey(t)] ? "#37c26b88" : "#9aa5b155"; x.beginPath(); x.arc(px, py, 3, 0, 7); x.fill(); }
   const [sx, sy] = P(s.x, s.y); x.fillStyle = "#4ea1ff"; x.beginPath(); x.arc(sx, sy, 9, 0, 7); x.fill();
+  if (S.phase === "walk" && S.userAng != null) {
+    const R = Math.hypot(s.x, s.y), ua = rad(S.userAng), [ux, uy] = P(R * Math.cos(ua), R * Math.sin(ua));
+    x.strokeStyle = "#f2c037"; x.lineWidth = 4; x.beginPath(); x.arc(ux, uy, 9, 0, 7); x.stroke();
+  }
   const yr = rad(s.yaw), [dx, dy] = [Math.sin(yr) * 26, -Math.cos(yr) * 26];
   x.strokeStyle = "#4ea1ff"; x.lineWidth = 4; x.beginPath(); x.moveTo(sx, sy); x.lineTo(sx + dx, sy + dy); x.stroke();
   x.restore();
 }
 
+// Where are you? While you point the camera at the object's middle, your angle around it is
+// (camera heading - front + 180). That's all the walk phase needs.
+function userAngle() {
+  if (S.heading == null || S.front == null) return null;
+  return ((S.heading - S.front + 180) % 360 + 360) % 360;
+}
+function needsWalk(s) { return !shotGeom(s).inside; }
 function aimError() {
   const s = S.shots[S.idx]; if (!s || S.heading == null || S.front == null) return null;
   const want = (S.front + s.yaw) % 360;
@@ -351,12 +437,28 @@ function loop() {
   const e = aimError(), hud = $("hud"), ctx = hud.getContext("2d");
   const W = hud.width = hud.clientWidth * devicePixelRatio, H = hud.height = hud.clientHeight * devicePixelRatio;
   ctx.clearRect(0, 0, W, H);
+  const s = S.shots[S.idx];
+  if (e && S.phase === "walk" && needsWalk(s)) {
+    const ua = userAngle(), g = shotGeom(s), d = wrap(g.ang - ua);
+    const R = Math.hypot(s.x, s.y), arc = Math.abs(rad(d)) * R;
+    S.userAng = ua;
+    $("t-turn").textContent = Math.abs(d) < 12 ? "here ✓" : (d > 0 ? "↻ " : "↺ ") + fmtLen(arc);
+    $("t-tilt").textContent = "–";
+    $("t-status").textContent = Math.abs(d) < 12 ? "You're in place: tap Aim (or hold for a second)" :
+      `Keep the camera on the object and walk ${d > 0 ? "clockwise" : "counter-clockwise"} around it (${Math.abs(Math.round(d))}°)`;
+    $("t-status").className = "status " + (Math.abs(d) < 12 ? "ok" : "warn");
+    if (Math.abs(d) < 12) { S.inPlaceSince = S.inPlaceSince || performance.now(); if (performance.now() - S.inPlaceSince > 1200) setPhase("aim"); }
+    else S.inPlaceSince = 0;
+    drawMap(s);
+    requestAnimationFrame(loop); return;
+  }
   if (!e) {
     $("t-turn").textContent = "–"; $("t-tilt").textContent = S.pitch == null ? "–" : `${Math.round(S.pitch)}° → ${Math.round(S.shots[S.idx].pitch)}°`;
     $("t-status").textContent = S.front == null ? "Not calibrated: use the stand / height / tilt guidance and tap Take shot" : "Waiting for motion data";
     $("t-status").className = "status warn";
   } else {
-    const yawOk = Math.abs(e.yaw) < ALIGN_YAW, pOk = Math.abs(e.pitch) < ALIGN_PITCH;
+    const yawTol = Math.abs(S.shots[S.idx].pitch) > 60 ? 35 : ALIGN_YAW;   // heading is meaningless pointing straight down
+    const yawOk = Math.abs(e.yaw) < yawTol, pOk = Math.abs(e.pitch) < ALIGN_PITCH;
     $("t-turn").textContent = yawOk ? "✓" : (e.yaw > 0 ? "→ " : "← ") + Math.abs(Math.round(e.yaw)) + "°";
     $("t-tilt").textContent = pOk ? "✓" : (e.pitch > 0 ? "↑ " : "↓ ") + Math.abs(Math.round(e.pitch)) + "°";
     const steady = performance.now() - S.lastMove > STEADY_MS;
@@ -402,6 +504,13 @@ async function shoot(auto) {
   } catch (err) { toast("Shot failed: " + err.message); }
   setTimeout(() => S.shooting = false, 700);
 }
+function setPhase(p) {
+  S.phase = p; S.inPlaceSince = 0; S.lastMove = performance.now();
+  const s = S.shots[S.idx];
+  $("b-phase").textContent = p === "walk" ? "Aim ▸" : "◂ Walk";
+  $("b-phase").style.display = s && needsWalk(s) && S.front != null ? "" : "none";
+}
+$("b-phase").onclick = () => setPhase(S.phase === "walk" ? "aim" : "walk");
 $("b-shoot").onclick = () => shoot(false);
 $("b-prev").onclick = () => { if (S.idx > 0) { S.idx--; save(); render(); } };
 $("b-next").onclick = () => { if (S.idx < S.shots.length - 1) { S.idx++; save(); render(); } };
