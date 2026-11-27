@@ -29,7 +29,7 @@ h2{font-size:17px;margin:0}
 input[type=file]{display:none}
 #cam{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3}
 #cam video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
-#cam .hud{position:absolute;inset:0;pointer-events:none}
+.hud{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #flash{position:absolute;inset:0;background:#fff;opacity:0;transition:opacity .25s;pointer-events:none}
 .meter{height:10px;background:#2a313b;border-radius:6px;position:relative;overflow:hidden}
 .meter i{position:absolute;top:0;bottom:0;width:4px;margin-left:-2px;background:var(--text)}
@@ -79,6 +79,11 @@ label.chk{display:flex;align-items:center;gap:8px}
     <p class="small dim" id="t-resume"></p>
     <div class="row"><button class="pri" id="b-resume">Resume</button><button id="b-forget">Start over</button></div>
   </div>
+  <div class="card">
+    <h2>Markers</h2>
+    <p class="small dim">Print these for automatic position tracking and true scale. Print at 100% / Actual size and check the ruler.</p>
+    <div class="row"><a href="markers/scan_markers_letter.pdf" target="_blank" rel="noopener"><button style="width:100%">Print markers (PDF)</button></a><a href="markers/" target="_blank" rel="noopener"><button style="width:100%">3D-print files</button></a></div>
+  </div>
   <p class="small dim">Photos stay on this phone (in the browser's storage) until you export them.</p>
 </section>
 
@@ -89,6 +94,15 @@ label.chk{display:flex;align-items:center;gap:8px}
   <div class="card">
     <h2>Which shots</h2>
     <div id="groups" class="small" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
+  </div>
+  <div class="card">
+    <h2>Reference markers</h2>
+    <p class="small dim">Printed tags let the app see exactly where the phone is (distance, height, angle) and set the scale.</p>
+    <div class="small" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+      <label class="chk"><input type="radio" name="ref" value="mat"> Scan mat (object sits in the middle of the sheet)</label>
+      <label class="chk"><input type="radio" name="ref" value="anchor"> Anchor tag (4 in / 6 in tag on the ground in front)</label>
+      <label class="chk"><input type="radio" name="ref" value="none" checked> No markers (compass only)</label>
+    </div>
   </div>
   <div class="card">
     <h2>Sensors</h2>
@@ -103,10 +117,13 @@ label.chk{display:flex;align-items:center;gap:8px}
 <section class="screen" id="s-cal">
   <div class="top"><button class="back" data-back>‹ Back</button><h1 style="margin:0">Calibrate</h1></div>
   <div class="card">
-    <p>Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.</p>
+    <p id="cal-text">Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.</p>
     <p class="small dim">Everything after this is measured from that direction, so no compass bearings are needed. Recalibrate if the guidance starts to drift.</p>
   </div>
-  <div class="card"><div class="row"><div><div class="dim small">Camera heading</div><div class="big" id="t-calhead">–</div></div><div><div class="dim small">Tilt</div><div class="big" id="t-calpitch">–</div></div></div></div>
+  <div id="cam2" style="position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3"><video id="v2" playsinline muted autoplay style="width:100%;height:100%;object-fit:cover;display:block;background:#000"></video><canvas class="hud" id="hud2"></canvas></div>
+  <div class="card" id="cal-marker" style="display:none"><div class="status" id="t-mk">Looking for markers…</div><div class="small dim" id="t-mk2"></div></div>
+  <div class="card" id="cal-compass"><div class="row"><div><div class="dim small">Camera heading</div><div class="big" id="t-calhead">–</div></div><div><div class="dim small">Tilt</div><div class="big" id="t-calpitch">–</div></div></div></div>
+  <button class="ok" id="b-locate" style="display:none">Locate object (crosshair on its base)</button>
   <button class="ok" id="b-setfront">This is the front</button>
   <button id="b-skipcal">Skip (shot list only)</button>
 </section>
@@ -154,6 +171,9 @@ label.chk{display:flex;align-items:center;gap:8px}
 
 <div class="toast" id="toast"></div>
 
+<script src="vendor/cv.js"></script>
+<script src="vendor/aruco.js"></script>
+<script src="vendor/apriltag_36h11.js"></script>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -164,7 +184,8 @@ const ALIGN_YAW = 8, ALIGN_PITCH = 6, STEADY_MS = 600, STEADY_DEG = 1.5;
 const S = {                                                    // app state
   plan: null, key: "", shots: [], idx: 0, groups: {}, front: null,
   done: {}, cam: null, track: null, heading: null, pitch: null, sim: false,
-  lastMove: 0, prev: null, shooting: false, phase: "walk", lastIdx: -1, userAng: null, inPlaceSince: 0
+  lastMove: 0, prev: null, shooting: false, phase: "walk", lastIdx: -1, userAng: null, inPlaceSince: 0,
+  ref: "none", anchor: null, sharpHist: []
 };
 
 // ---------------------------------------------------------------- storage
@@ -181,14 +202,14 @@ const tx = (mode) => DB.transaction("photos", mode).objectStore("photos");
 const putPhoto = p => new Promise((ok, no) => { const r = tx("readwrite").put(p); r.onsuccess = ok; r.onerror = () => no(r.error); });
 const allPhotos = () => new Promise((ok, no) => { const r = tx("readonly").getAll(); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
 function save() {
-  try { localStorage.setItem("scanguide", JSON.stringify({ plan: S.plan, key: S.key, idx: S.idx, groups: S.groups, front: S.front, done: S.done })); } catch (e) { toast("Couldn't save progress: " + e.message); }
+  try { localStorage.setItem("scanguide", JSON.stringify({ plan: S.plan, key: S.key, idx: S.idx, groups: S.groups, front: S.front, done: S.done, ref: S.ref, anchor: S.anchor })); } catch (e) { toast("Couldn't save progress: " + e.message); }
 }
 function load() { try { return JSON.parse(localStorage.getItem("scanguide") || "null"); } catch (e) { return null; } }
 
 function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove("on"), 2200); }
 // Navigation. Each screen change is pushed onto the history, so the on-screen ‹ Back buttons and
 // the iPhone's swipe-back gesture do the same thing.
-const ENTER = { "s-load": () => initLoad(), "s-cal": () => calLoop(), "s-shoot": () => { render(); loop(); } };
+const ENTER = { "s-load": () => initLoad(), "s-cal": () => { calSetup(); calLoop(); }, "s-shoot": () => { render(); loop(); } };
 function show(id, push = true) {
   const cur = document.querySelector(".screen.on");
   if (cur && cur.id === id) return;
@@ -284,6 +305,7 @@ function setupScreen() {
     (S.plan.checklist && S.plan.checklist.length ? `<br>${S.plan.checklist.length}-item detail checklist (in the shot list file)` : "");
   $("groups").innerHTML = Object.keys(counts).map(g => `<label class="chk"><input type="checkbox" data-g="${g}" ${S.groups[g] ? "checked" : ""}> ${g} <span class="dim">(${counts[g]})</span></label>`).join("");
   $("groups").querySelectorAll("input").forEach(c => c.onchange = () => { S.groups[c.dataset.g] = c.checked; refreshShots(); save(); });
+  document.querySelectorAll('input[name=ref]').forEach(r => r.checked = r.value === (S.ref || "none"));
   show("s-setup");
 }
 
@@ -317,7 +339,7 @@ async function startSensors() {
   } catch (e) { msg.push("motion ✗ (" + e.message + ")"); S.sim = true; $("sim").classList.add("on"); }
   try {
     S.cam = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 4032 }, height: { ideal: 3024 } } });
-    $("v").srcObject = S.cam; S.track = S.cam.getVideoTracks()[0];
+    $("v").srcObject = S.cam; $("v2").srcObject = S.cam; S.track = S.cam.getVideoTracks()[0];
     const st = S.track.getSettings(); msg.push(`camera ✓ ${st.width}×${st.height}`);
   } catch (e) { msg.push("camera ✗ (" + e.message + ")"); }
   $("t-sensors").textContent = msg.join(" · ");
@@ -325,15 +347,179 @@ async function startSensors() {
 $("b-sensors").onclick = startSensors;
 ["sim-h", "sim-p"].forEach(id => $(id).oninput = () => { S.lastMove = performance.now(); S.heading = +$("sim-h").value; S.pitch = +$("sim-p").value; });
 
+// ---------------------------------------------------------------- markers (AprilTag 36h11)
+// Sizes are fixed per ID (see marker_spec.json). Mat: object in the middle, FRONT = top of the sheet.
+const INM = 0.0254;
+const TAG_SIZE = { 0: INM, 1: INM, 2: INM, 3: INM, 4: INM, 5: INM, 6: INM, 7: INM, 10: 4 * INM, 20: 6 * INM, 21: 6 * INM, 22: 6 * INM, 23: 6 * INM };
+const MAT_C = { 0: [-82, 118], 1: [0, 118], 2: [82, 118], 3: [82, 0], 4: [82, -118], 5: [0, -118], 6: [-82, -118], 7: [-82, 0] };   // mm, x right, y front
+const TR = { det: null, dc: null, last: 0, fEst: [], pose: null, seen: [], quads: [], dw: 0, dh: 0 };
+// Working frame W is right-handed: x = front, y = LEFT, z = up (object frame has y = right).
+function tagCornersTagFrame(id) { const h = TAG_SIZE[id] / 2; return [[-h, h], [h, h], [h, -h], [-h, -h]]; }   // TL TR BR BL, (x right, y up)
+function worldCorners(id) {
+  const cs = tagCornersTagFrame(id);
+  if (S.ref === "mat" && MAT_C[id]) {
+    const [mx, my] = MAT_C[id];
+    return cs.map(([tx, ty]) => [(my / 1000 + ty), -(mx / 1000 + tx)]);
+  }
+  if (S.ref === "anchor" && S.anchor && id === S.anchor.id) {
+    const [cx, cy] = S.anchor.c;                       // object centre in tag coordinates
+    return cs.map(([tx, ty]) => [ty - cy, -(tx - cx)]);
+  }
+  if (S.ref === "anchor" && !S.anchor && (id === 10 || id === 20)) return cs.map(([tx, ty]) => [ty, -tx]);
+  return null;
+}
+function solveLS(A, b) {                                  // least squares via normal equations + Gaussian elimination
+  const n = A[0].length, M = Array.from({ length: n }, () => new Float64Array(n + 1));
+  for (let r = 0; r < A.length; r++) for (let i = 0; i < n; i++) { for (let j = 0; j < n; j++) M[i][j] += A[r][i] * A[r][j]; M[i][n] += A[r][i] * b[r]; }
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]]; if (Math.abs(M[c][c]) < 1e-12) return null;
+    for (let r = 0; r < n; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; }
+  }
+  return M.map((row, i) => row[n] / row[i]);
+}
+function homography(W, I) {                               // plane points W[i]=[X,Y] -> image I[i]=[u,v]
+  const norm = P => { const m = [0, 1].map(k => P.reduce((a, p) => a + p[k], 0) / P.length);
+    const d = P.reduce((a, p) => a + Math.hypot(p[0] - m[0], p[1] - m[1]), 0) / P.length || 1, s = Math.SQRT2 / d;
+    return { T: [[s, 0, -s * m[0]], [0, s, -s * m[1]], [0, 0, 1]], P: P.map(p => [s * (p[0] - m[0]), s * (p[1] - m[1])]) }; };
+  const a = norm(W), c = norm(I), A = [], b = [];
+  for (let i = 0; i < W.length; i++) {
+    const [X, Y] = a.P[i], [u, v] = c.P[i];
+    A.push([X, Y, 1, 0, 0, 0, -u * X, -u * Y]); b.push(u);
+    A.push([0, 0, 0, X, Y, 1, -v * X, -v * Y]); b.push(v);
+  }
+  const h = solveLS(A, b); if (!h) return null;
+  const Hn = [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1]];
+  const Ti = inv3(c.T); return mul3(mul3(Ti, Hn), a.T);
+}
+function mul3(A, B) { return A.map((r, i) => [0, 1, 2].map(j => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j])); }
+function inv3(m) {
+  const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2], A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, D = a * A + b * B + c * C;
+  return [[A / D, -(b * i - c * h) / D, (b * f - c * e) / D], [B / D, (a * i - c * g) / D, -(a * f - c * d) / D], [C / D, -(a * h - b * g) / D, (a * e - b * d) / D]];
+}
+const col = (M, j) => [M[0][j], M[1][j], M[2][j]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const nrm = a => { const l = Math.hypot(...a) || 1; return a.map(v => v / l); };
+function focalFromH(H, cx, cy) {                           // Zhang: square pixels, principal point at centre
+  const Hc = mul3([[1, 0, -cx], [0, 1, -cy], [0, 0, 1]], H), h1 = col(Hc, 0), h2 = col(Hc, 1);
+  const d1 = h1[0] * h2[0] + h1[1] * h2[1], d2 = h1[0] ** 2 + h1[1] ** 2 - h2[0] ** 2 - h2[1] ** 2;
+  const a1 = Math.abs(d1) > 1e-9 ? -(h1[2] * h2[2]) / d1 : NaN, a2 = Math.abs(d2) > 1e-9 ? -(h1[2] ** 2 - h2[2] ** 2) / d2 : NaN;
+  const a = Math.abs(d1) > Math.abs(d2) ? a1 : a2;
+  return a > 0 ? 1 / Math.sqrt(a) : null;
+}
+function poseFromH(H, f, cx, cy) {
+  const Ki = [[1 / f, 0, -cx / f], [0, 1 / f, -cy / f], [0, 0, 1]], B = mul3(Ki, H);
+  let b1 = col(B, 0), b2 = col(B, 1), b3 = col(B, 2);
+  const lam = 2 / (Math.hypot(...b1) + Math.hypot(...b2));
+  let r1 = b1.map(v => v * lam), r2 = b2.map(v => v * lam), t = b3.map(v => v * lam);
+  if (t[2] < 0) { r1 = r1.map(v => -v); r2 = r2.map(v => -v); t = t.map(v => -v); }
+  r1 = nrm(r1); r2 = nrm(r2.map((v, i) => v - dot(r1, r2) * r1[i])); const r3 = cross(r1, r2);
+  const R = [[r1[0], r2[0], r3[0]], [r1[1], r2[1], r3[1]], [r1[2], r2[2], r3[2]]];      // world -> camera (columns r1 r2 r3)
+  const C = [0, 1, 2].map(i => -(R[0][i] * t[0] + R[1][i] * t[1] + R[2][i] * t[2]));   // -R^T t
+  const fwd = [R[2][0], R[2][1], R[2][2]];                                              // camera +z in world
+  return { C, fwd, R, t };
+}
+function activeVideo() { return $("s-cal").classList.contains("on") ? $("v2") : $("v"); }
+function detectTick() {
+  if (S.ref === "none" || typeof AR === "undefined") return;
+  const v = activeVideo(), now = performance.now();
+  if (!v.videoWidth || now - TR.last < 110) return;
+  TR.last = now;
+  if (!TR.det) TR.det = new AR.Detector({ dictionaryName: "APRILTAG_36h11", maxHammingDistance: 4 });
+  const DW = Math.min(1280, v.videoWidth), DH = Math.round(v.videoHeight * DW / v.videoWidth);
+  if (!TR.dc) TR.dc = document.createElement("canvas");
+  if (TR.dc.width !== DW) { TR.dc.width = DW; TR.dc.height = DH; }
+  const cx = TR.dc.getContext("2d", { willReadFrequently: true }); cx.drawImage(v, 0, 0, DW, DH);
+  let ms = [];
+  try { ms = TR.det.detect(cx.getImageData(0, 0, DW, DH)); } catch (e) { return; }
+  TR.dw = DW; TR.dh = DH; TR.quads = ms.filter(m => TAG_SIZE[m.id]).map(m => ({ id: m.id, c: m.corners.map(p => [p.x, p.y]) }));
+  const Wp = [], Ip = [], used = [];
+  for (const q of TR.quads) { const w = worldCorners(q.id); if (!w) continue; used.push(q.id); for (let k = 0; k < 4; k++) { Wp.push(w[k]); Ip.push(q.c[k]); } }
+  TR.seen = used;
+  if (Wp.length < 4) return;
+  const H = homography(Wp, Ip); if (!H) return;
+  // focal length from the view itself (needs a tilted view of the plane); fall back to the iPhone main camera (~65°)
+  const fz = focalFromH(H, DW / 2, DH / 2);
+  if (fz && fz > 0.45 * DW && fz < 1.6 * DW && Wp.length >= 8) { TR.fEst.push(fz); if (TR.fEst.length > 40) TR.fEst.shift(); }
+  const fs = TR.fEst.length >= 6 ? [...TR.fEst].sort((a, b) => a - b)[TR.fEst.length >> 1] : 0.785 * DW;
+  const p = poseFromH(H, fs, DW / 2, DH / 2);
+  if (!(p.C[2] > -0.05)) return;                          // camera below the plane: a bad fit
+  const prev = TR.pose, a = prev && now - prev.time < 600 ? 0.45 : 1;
+  const C = prev && a < 1 ? prev.C.map((v, i) => v + (p.C[i] - v) * a) : p.C;
+  const fwd = nrm(prev && a < 1 ? prev.fwd.map((v, i) => v + (p.fwd[i] - v) * a) : p.fwd);
+  TR.pose = { C, fwd, R: p.R, t: p.t, f: fs, time: now, n: used.length, raw: p };
+  // keep the compass in step: whenever tags are in view, they define the front
+  const objYaw = (deg(Math.atan2(-fwd[1], fwd[0])) + 360) % 360;   // object frame: y right = -W.y, clockwise from front
+  if (S.heading != null && (S.ref === "mat" || S.anchor)) {
+    const est = (S.heading - objYaw + 360) % 360;
+    S.front = S.front == null ? est : (S.front + wrap(est - S.front) * 0.15 + 360) % 360;
+  }
+}
+function trackFresh() { return TR.pose && performance.now() - TR.pose.time < 700 && (S.ref === "mat" || S.anchor) ? TR.pose : null; }
+function objPos(p) { return [p.C[0], -p.C[1], p.C[2]]; }      // W -> object frame (y right)
+function drawTags(canvas, v) {
+  const ctx = canvas.getContext("2d"), W = canvas.width = canvas.clientWidth * devicePixelRatio, H = canvas.height = canvas.clientHeight * devicePixelRatio;
+  ctx.clearRect(0, 0, W, H);
+  if (!TR.dw || !v.videoWidth) return ctx;
+  const sc = Math.max(W / v.videoWidth, H / v.videoHeight), ox = (W - v.videoWidth * sc) / 2, oy = (H - v.videoHeight * sc) / 2, k = v.videoWidth / TR.dw;
+  for (const q of TR.quads) {
+    ctx.strokeStyle = TR.seen.includes(q.id) ? "#37c26b" : "#9aa5b1"; ctx.lineWidth = 3 * devicePixelRatio; ctx.beginPath();
+    q.c.forEach(([x, y], i) => { const X = ox + x * k * sc, Y = oy + y * k * sc; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }); ctx.closePath(); ctx.stroke();
+    ctx.fillStyle = "#37c26b"; ctx.font = `${12 * devicePixelRatio}px -apple-system,sans-serif`; ctx.fillText(q.id, ox + q.c[0][0] * k * sc, oy + q.c[0][1] * k * sc - 4);
+  }
+  return ctx;
+}
+function locateObject() {
+  const p = TR.pose; if (!p || performance.now() - p.time > 700 || !TR.quads.some(q => q.id === 10 || q.id === 20)) return toast("Keep the 4 in or 6 in tag in view, crosshair on the object's base");
+  // ray from the camera through the screen centre to the ground plane (tag plane)
+  const d = p.fwd; if (d[2] > -0.05) return toast("Tilt the phone down toward the object's base");
+  const s = -p.C[2] / d[2], P = [p.C[0] + s * d[0], p.C[1] + s * d[1]];
+  const id = TR.quads.find(q => q.id === 10 || q.id === 20).id;
+  const base = S.anchor ? S.anchor.c : [0, 0];          // current W origin in tag coordinates
+  S.anchor = { id, c: [base[0] - P[1], base[1] + P[0]] };   // tag coords: tx = -W.y, ty = W.x
+  TR.pose = null; save();
+  toast(`Object located ${fmtLen(Math.hypot(P[0], P[1]))} from the tag`);
+}
+setInterval(() => { try { detectTick(); } catch (e) { } }, 60);
+
 // ---------------------------------------------------------------- calibrate
+document.addEventListener("change", e => { if (e.target.name === "ref") { S.ref = e.target.value; S.anchor = null; TR.pose = null; save(); } });
 $("b-tocal").onclick = () => { if (!S.shots.length) return toast("No shot groups selected"); show("s-cal"); };
+function calSetup() {
+  const r = S.ref, mk = r !== "none";
+  $("cal-marker").style.display = mk ? "" : "none";
+  $("cal-compass").style.display = mk ? "none" : "";
+  $("b-locate").style.display = r === "anchor" ? "" : "none";
+  $("b-setfront").textContent = r === "none" ? "This is the front" : "Start shooting";
+  $("cal-text").innerHTML = r === "mat" ? "Put the object in the middle of the <b>scan mat</b>, FRONT arrow pointing the way it faces. Point the camera at the mat: the tags light up green." :
+    r === "anchor" ? "Lay the <b>anchor tag</b> flat on the ground in front of the object, arrow pointing the way the object faces. Then, with the tag in view, put the crosshair on the middle of the object's base and tap <b>Locate object</b>." :
+    "Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.";
+  if (S.cam) $("v2").srcObject = S.cam;
+}
 function calLoop() {
   if (!$("s-cal").classList.contains("on")) return;
+  if (S.ref !== "none") {
+    const p = trackFresh(), ctx = drawTags($("hud2"), $("v2")), W = $("hud2").width, H = $("hud2").height;
+    ctx.strokeStyle = "#ffffffcc"; ctx.lineWidth = 2 * devicePixelRatio; ctx.beginPath(); ctx.arc(W / 2, H / 2, 14 * devicePixelRatio, 0, 7);
+    ctx.moveTo(W / 2 - 24 * devicePixelRatio, H / 2); ctx.lineTo(W / 2 + 24 * devicePixelRatio, H / 2); ctx.moveTo(W / 2, H / 2 - 24 * devicePixelRatio); ctx.lineTo(W / 2, H / 2 + 24 * devicePixelRatio); ctx.stroke();
+    const ok = S.ref === "mat" ? !!p : !!S.anchor && !!p;
+    $("t-mk").textContent = TR.seen.length ? `${TR.seen.length} tag${TR.seen.length > 1 ? "s" : ""} in view` + (ok ? " ✓" : "") : (TR.quads.length ? "Tags seen, but not the expected ones" : "Looking for markers…");
+    $("t-mk").className = "status " + (ok ? "ok" : "warn");
+    if (p) { const o = objPos(p); $("t-mk2").textContent = `Phone is ${fmtLen(Math.hypot(o[0], o[1]))} from the object's centre, ${fmtLen(o[2])} up` + (TR.fEst.length >= 6 ? " · lens calibrated" : ""); }
+    else $("t-mk2").textContent = S.ref === "anchor" && !S.anchor ? "Then aim at the object's base and tap Locate object" : "";
+    $("b-setfront").disabled = !ok;
+  }
   $("t-calhead").textContent = S.heading == null ? "–" : Math.round(S.heading) + "°";
   $("t-calpitch").textContent = S.pitch == null ? "–" : (S.pitch > 0 ? "+" : "") + Math.round(S.pitch) + "°";
   requestAnimationFrame(calLoop);
 }
+$("b-locate").onclick = locateObject;
 $("b-setfront").onclick = () => {
+  if (S.ref !== "none") {
+    const p = trackFresh(); if (!p) return toast("No markers in view yet");
+    const o = objPos(p); startNearMe((deg(Math.atan2(o[1], o[0])) + 360) % 360);
+    save(); goShoot(); return;
+  }
   if (S.heading == null) return toast("No motion data yet: tap 'Allow motion + camera' first, or skip");
   S.front = S.heading;
   startNearMe(180);           // you calibrate from behind the object
@@ -402,7 +588,7 @@ const shotKey = s => S.key + "/" + s.id;
 function drawMap(s) {
   const c = $("map"), x = c.getContext("2d"), W = c.width, o = S.plan.object || {};
   const L = o.length || 2, Wd = o.width || 1;
-  const reach = Math.max(...S.shots.map(t => Math.hypot(t.x, t.y)), L / 2, Wd / 2) + 0.3, k = (W / 2 - 8) / reach;
+  const reach = Math.max(...S.shots.map(t => Math.hypot(t.x, t.y)), L / 2, Wd / 2, S.livePos ? Math.min(3 * Math.max(L, Wd, 0.5), Math.hypot(S.livePos[0], S.livePos[1])) : 0) * 1.08 + 0.05, k = (W / 2 - 8) / reach;
   x.clearRect(0, 0, W, W); x.save(); x.translate(W / 2, W / 2);
   // screen: front = up, object right = screen right
   const P = (px, py) => [py * k, -px * k];
@@ -410,7 +596,10 @@ function drawMap(s) {
   x.strokeStyle = "#9aa5b1"; x.lineWidth = 3; x.beginPath(); const [fx, fy] = P(L / 2, 0); x.moveTo(fx, fy); x.lineTo(fx, fy - 14); x.stroke();
   for (const t of S.shots) { const [px, py] = P(t.x, t.y); x.fillStyle = S.done[shotKey(t)] ? "#37c26b88" : "#9aa5b155"; x.beginPath(); x.arc(px, py, 3, 0, 7); x.fill(); }
   const [sx, sy] = P(s.x, s.y); x.fillStyle = "#4ea1ff"; x.beginPath(); x.arc(sx, sy, 9, 0, 7); x.fill();
-  if (S.phase === "walk" && S.userAng != null) {
+  if (S.livePos) {
+    const [ux, uy] = P(S.livePos[0], S.livePos[1]);
+    x.fillStyle = "#f2c037"; x.beginPath(); x.arc(ux, uy, 7, 0, 7); x.fill();
+  } else if (S.phase === "walk" && S.userAng != null) {
     const R = Math.hypot(s.x, s.y), ua = rad(S.userAng), [ux, uy] = P(R * Math.cos(ua), R * Math.sin(ua));
     x.strokeStyle = "#f2c037"; x.lineWidth = 4; x.beginPath(); x.arc(ux, uy, 9, 0, 7); x.stroke();
   }
@@ -434,11 +623,36 @@ function aimError() {
 
 function loop() {
   if (!$("s-shoot").classList.contains("on")) return;
-  const e = aimError(), hud = $("hud"), ctx = hud.getContext("2d");
-  const W = hud.width = hud.clientWidth * devicePixelRatio, H = hud.height = hud.clientHeight * devicePixelRatio;
-  ctx.clearRect(0, 0, W, H);
+  const hud = $("hud"), ctx = drawTags(hud, $("v"));
+  const W = hud.width, H = hud.height;
   const s = S.shots[S.idx];
-  if (e && S.phase === "walk" && needsWalk(s)) {
+  const tp = trackFresh();
+  let e = aimError();
+  S.livePos = null; S.posOk = true;
+  if (tp && s) {
+    // We know where the phone really is: guide position first, in centimetres, relative to the way you face.
+    const o = objPos(tp), fo = [tp.fwd[0], -tp.fwd[1], tp.fwd[2]];
+    S.livePos = o;
+    e = { yaw: wrap(s.yaw - deg(Math.atan2(fo[1], fo[0]))), pitch: s.pitch - deg(Math.asin(Math.max(-1, Math.min(1, fo[2])))) };
+    const dx = s.x - o[0], dy = s.y - o[1], dz = s.z - o[2];
+    const hf = nrm([fo[0], fo[1], 0]), fwdAmt = dx * hf[0] + dy * hf[1], rightAmt = dx * -hf[1] + dy * hf[0];
+    const tolH = Math.max(0.04, 0.12 * Math.hypot(s.x, s.y)), tolZ = Math.max(0.04, 0.12 * Math.max(s.z, 0.3));
+    S.posOk = Math.hypot(dx, dy) < tolH && Math.abs(dz) < tolZ;
+    if (!S.posOk) {
+      const parts = [];
+      if (Math.abs(rightAmt) > tolH * 0.6) parts.push(`step ${fmtLen(Math.abs(rightAmt))} ${rightAmt > 0 ? "right" : "left"}`);
+      if (Math.abs(fwdAmt) > tolH * 0.6) parts.push(`${fmtLen(Math.abs(fwdAmt))} ${fwdAmt > 0 ? "closer" : "back"}`);
+      if (Math.abs(dz) >= tolZ) parts.push(`${dz > 0 ? "raise" : "lower"} the phone ${fmtLen(Math.abs(dz))}`);
+      const say = parts.join(", ");
+      const big = Math.abs(rightAmt) > Math.abs(fwdAmt) ? (rightAmt > 0 ? "→ " : "← ") + fmtLen(Math.abs(rightAmt)) : (fwdAmt > 0 ? "↑ " : "↓ ") + fmtLen(Math.abs(fwdAmt));   // ↑ = step closer
+      $("t-turn").textContent = Math.hypot(dx, dy) < tolH ? "✓" : big;
+      $("t-tilt").textContent = Math.abs(dz) < tolZ ? "height ✓" : (dz > 0 ? "raise " : "lower ") + fmtLen(Math.abs(dz));
+      $("t-status").textContent = (say ? say[0].toUpperCase() + say.slice(1) : "Almost there") + ` · you're ${fmtLen(Math.hypot(o[0], o[1]))} from the centre, ${fmtLen(o[2])} up`;
+      $("t-status").className = "status warn";
+      drawMap(s); requestAnimationFrame(loop); return;
+    }
+  }
+  if (!tp && e && S.phase === "walk" && needsWalk(s)) {
     const ua = userAngle(), g = shotGeom(s), d = wrap(g.ang - ua);
     const R = Math.hypot(s.x, s.y), arc = Math.abs(rad(d)) * R;
     S.userAng = ua;
@@ -463,7 +677,7 @@ function loop() {
     $("t-tilt").textContent = pOk ? "✓" : (e.pitch > 0 ? "↑ " : "↓ ") + Math.abs(Math.round(e.pitch)) + "°";
     const steady = performance.now() - S.lastMove > STEADY_MS;
     const ok = yawOk && pOk;
-    $("t-status").textContent = ok ? (steady ? "Lined up: hold still" : "Lined up: steady…") : "Turn and tilt until both show ✓";
+    $("t-status").textContent = (ok ? (steady ? "Lined up: hold still" : "Lined up: steady…") : "Turn and tilt until both show ✓") + (tp ? " · position ✓" : "");
     $("t-status").className = "status " + (ok ? "ok" : "warn");
     // crosshair: target point relative to the screen centre (camera horizontal FOV ~ 60° in this preview)
     const px = W / 2 + Math.max(-1, Math.min(1, e.yaw / 30)) * W / 2, py = H / 2 - Math.max(-1, Math.min(1, e.pitch / 23)) * H / 2;
@@ -471,7 +685,7 @@ function loop() {
     ctx.beginPath(); ctx.arc(px, py, 22 * devicePixelRatio, 0, 7); ctx.stroke();
     ctx.strokeStyle = "#ffffffaa"; ctx.beginPath(); ctx.moveTo(W / 2 - 14 * devicePixelRatio, H / 2); ctx.lineTo(W / 2 + 14 * devicePixelRatio, H / 2);
     ctx.moveTo(W / 2, H / 2 - 14 * devicePixelRatio); ctx.lineTo(W / 2, H / 2 + 14 * devicePixelRatio); ctx.stroke();
-    if (ok && steady && $("k-auto").checked && !S.done[shotKey(S.shots[S.idx])] && !S.shooting) shoot(true);
+    if (ok && S.posOk && steady && $("k-auto").checked && !S.done[shotKey(S.shots[S.idx])] && !S.shooting) shoot(true);
   }
   requestAnimationFrame(loop);
 }
@@ -481,18 +695,45 @@ async function grab() {
   if (!S.cam || !v.videoWidth) return null;
   const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
   c.getContext("2d").drawImage(v, 0, 0);
-  return await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.93));
+  return { canvas: c, blob: await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.93)) };
+}
+// Sharpness = variance of the Laplacian on a small grey copy; glare = share of blown-out pixels.
+function quality(canvas) {
+  const w = 480, h = Math.round(canvas.height * w / canvas.width), t = document.createElement("canvas"); t.width = w; t.height = h;
+  const x = t.getContext("2d", { willReadFrequently: true }); x.drawImage(canvas, 0, 0, w, h);
+  const d = x.getImageData(0, 0, w, h).data, g = new Float32Array(w * h); let hot = 0;
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) { g[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; if (d[i] > 250 && d[i + 1] > 250 && d[i + 2] > 250) hot++; }
+  let s1 = 0, s2 = 0, n = 0;
+  for (let yy = 1; yy < h - 1; yy++) for (let xx = 1; xx < w - 1; xx++) {
+    const k = yy * w + xx, L = 4 * g[k] - g[k - 1] - g[k + 1] - g[k - w] - g[k + w]; s1 += L; s2 += L * L; n++;
+  }
+  return { sharp: s2 / n - (s1 / n) ** 2, glare: hot / (w * h) };
 }
 async function shoot(auto) {
   const s = S.shots[S.idx]; if (!s || S.shooting) return;
   S.shooting = true;
   try {
-    const blob = await grab();
-    const e = aimError();
+    const got = await grab(), blob = got && got.blob;
+    let q = null;
+    if (got) {
+      q = quality(got.canvas);
+      const hist = S.sharpHist, med = hist.length >= 3 ? [...hist].sort((a, b) => a - b)[hist.length >> 1] : null;
+      const blurry = q.sharp < 6 || (med != null && q.sharp < 0.45 * med);
+      if (blurry && auto) {                                  // don't keep it: wait for a steadier moment
+        toast("Blurry: hold still…"); S.lastMove = performance.now(); setTimeout(() => S.shooting = false, 500); return;
+      }
+      if (blurry) toast("Looks blurry: retake if you can (◀ then Retake)");
+      else { hist.push(q.sharp); if (hist.length > 15) hist.shift(); }
+      if (q.glare > 0.03) toast(`Glare on ${Math.round(q.glare * 100)}% of the frame: shift a little or shade it`);
+      q.blurry = blurry;
+    }
+    const e = aimError(), tp = trackFresh();
     const meta = { shot: s.id, group: s.group, plan: S.key, time: new Date().toISOString(), auto: !!auto,
       heading_rel_front: S.front == null || S.heading == null ? null : +wrap(S.heading - S.front).toFixed(1),
       pitch: S.pitch == null ? null : +S.pitch.toFixed(1), aim_error: e && { yaw: +e.yaw.toFixed(1), pitch: +e.pitch.toFixed(1) },
-      target: { x: s.x, y: s.y, z: s.z, yaw: s.yaw, pitch: s.pitch } };
+      target: { x: s.x, y: s.y, z: s.z, yaw: s.yaw, pitch: s.pitch },
+      quality: q && { sharpness: +q.sharp.toFixed(1), glare: +q.glare.toFixed(3), blurry: q.blurry },
+      tracked: tp ? { ref: S.ref, pos_m: objPos(tp).map(v => +v.toFixed(3)), tags: TR.seen, focal_px_at: [+tp.f.toFixed(1), TR.dw] } : null };
     if (blob) {
       await putPhoto({ id: S.key + "/" + s.id + "/" + Date.now(), key: S.key, name: `${(S.plan.object || {}).name || "scan"}_${s.id}_${Date.now()}.jpg`, blob, meta });
       $("flash").style.opacity = .8; setTimeout(() => $("flash").style.opacity = 0, 120);
@@ -557,7 +798,7 @@ $("b-export").onclick = async () => {
   toast(`Packing ${ph.length} photos…`);
   const files = [];
   for (const p of ph) files.push({ name: "photos/" + p.name, data: new Uint8Array(await p.blob.arrayBuffer()) });
-  files.push({ name: "capture.json", data: new TextEncoder().encode(JSON.stringify({ plan: S.key, object: S.plan.object, front_heading: S.front, photos: ph.map(p => ({ file: "photos/" + p.name, ...p.meta })) }, null, 1)) });
+  files.push({ name: "capture.json", data: new TextEncoder().encode(JSON.stringify({ plan: S.key, object: S.plan.object, front_heading: S.front, reference: S.ref, anchor: S.anchor, photos: ph.map(p => ({ file: "photos/" + p.name, ...p.meta })) }, null, 1)) });
   const name = `${((S.plan.object || {}).name || "scan")}_capture_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.zip`;
   const zip = await makeZip(files), file = new File([zip], name, { type: "application/zip" });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -575,7 +816,7 @@ function initLoad() {
     $("t-resume").textContent = `${(st.plan.object || {}).name || "plan"}: ${n} of ${st.plan.shots.length} shots done`;
   }
 }
-$("b-resume").addEventListener("click", () => { const st = load(); Object.assign(S, { plan: st.plan, key: st.key, idx: st.idx || 0, groups: st.groups, front: st.front, done: st.done || {} }); refreshShots(); }, true);
+$("b-resume").addEventListener("click", () => { const st = load(); Object.assign(S, { plan: st.plan, key: st.key, idx: st.idx || 0, groups: st.groups, front: st.front, done: st.done || {}, ref: st.ref || "none", anchor: st.anchor || null }); refreshShots(); }, true);
 history.replaceState({ s: "s-load" }, "");
 openDB().then(initLoad).catch(e => toast("Storage unavailable: " + e.message));
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});

@@ -1,0 +1,19 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Scan markers</title>
+<style>body{font:16px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;max-width:760px;margin:0 auto;padding:20px;color:#1b1f24}h1{font-size:24px}a{color:#1a5fd0}td,th{padding:6px 10px;border-bottom:1px solid #ddd;text-align:left}table{border-collapse:collapse;width:100%}code{background:#f1f3f5;padding:1px 5px;border-radius:4px}</style></head><body>
+<h1>Scan markers</h1>
+<p>AprilTag 36h11. <b>Sizes are fixed per ID</b>: the app and the PC pipeline rely on them, so print at 100% / Actual size and check the ruler.</p>
+<p><a href="scan_markers_letter.pdf">scan_markers_letter.pdf</a> — page 1: scan mat (IDs 0–7, 1 in, object in the middle); page 2: anchor tag ID 10 (4 in); pages 3–6: IDs 20–23 (6 in).</p>
+<table><tr><th>ID</th><th>Size (black square)</th><th>Use</th></tr>
+<tr><td>0–7</td><td>1 in / 25.4 mm</td><td>Scan mat, small objects. FRONT arrow = the way the object faces.</td></tr>
+<tr><td>10</td><td>4 in / 101.6 mm</td><td>Anchor tag, mid-size objects. Flat on the ground in front, arrow the way the object faces.</td></tr>
+<tr><td>20</td><td>6 in / 152.4 mm</td><td>Anchor tag, big objects (cannons).</td></tr>
+<tr><td>21–23</td><td>6 in / 152.4 mm</td><td>Extra scale tags anywhere around a big object (used by the PC pipeline).</td></tr></table>
+<h2>3D-printed tiles (two colours)</h2>
+<p>Each tile is two STL files: <code>_white</code> (body, 2.4 mm + white cells) and <code>_black</code> (black cells, top 0.6 mm, flush). In Bambu Studio / OrcaSlicer / PrusaSlicer import <b>both files at once</b> and answer <b>Yes</b> to "load as a single object with multiple parts", then give the black part black filament. Use <b>matte</b> filament (gloss reflects and hides the pattern), 0.2 mm layers, 100% top infill. The small tab sticks out of the FRONT edge.</p>
+<ul>
+<li>ID 10 (4 in): <a href="tile_id10_white.stl">white</a> + <a href="tile_id10_black.stl">black</a> — 127 × 135 mm</li>
+<li>ID 20 (6 in): <a href="tile_id20_white.stl">white</a> + <a href="tile_id20_black.stl">black</a> — 191 × 202 mm (needs a 256 mm bed)</li>
+<li>IDs 21–23: <a href="tile_id21_white.stl">21 white</a> / <a href="tile_id21_black.stl">black</a>, <a href="tile_id22_white.stl">22 white</a> / <a href="tile_id22_black.stl">black</a>, <a href="tile_id23_white.stl">23 white</a> / <a href="tile_id23_black.stl">black</a></li>
+</ul>
+<p><a href="marker_spec.json">marker_spec.json</a> — sizes and positions in machine-readable form. <a href="../">← back to the Scan Guide</a></p>
+</body></html>
