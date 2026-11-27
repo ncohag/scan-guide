@@ -101,6 +101,7 @@ label.chk{display:flex;align-items:center;gap:8px}
     <div class="small" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
       <label class="chk"><input type="radio" name="ref" value="mat"> Scan mat (object sits in the middle of the sheet)</label>
       <label class="chk"><input type="radio" name="ref" value="anchor"> Anchor tag (4 in / 6 in tag on the ground in front)</label>
+      <label class="chk"><input type="radio" name="ref" value="turntable"> Turntable (phone on a tripod, you turn the platter)</label>
       <label class="chk"><input type="radio" name="ref" value="none" checked> No markers (compass only)</label>
     </div>
   </div>
@@ -202,7 +203,7 @@ const tx = (mode) => DB.transaction("photos", mode).objectStore("photos");
 const putPhoto = p => new Promise((ok, no) => { const r = tx("readwrite").put(p); r.onsuccess = ok; r.onerror = () => no(r.error); });
 const allPhotos = () => new Promise((ok, no) => { const r = tx("readonly").getAll(); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
 function save() {
-  try { localStorage.setItem("scanguide", JSON.stringify({ plan: S.plan, key: S.key, idx: S.idx, groups: S.groups, front: S.front, done: S.done, ref: S.ref, anchor: S.anchor })); } catch (e) { toast("Couldn't save progress: " + e.message); }
+  try { localStorage.setItem("scanguide", JSON.stringify({ plan: S.plan, key: S.key, idx: S.idx, groups: S.groups, front: S.front, done: S.done, ref: S.ref, anchor: S.anchor, tt: S.tt })); } catch (e) { toast("Couldn't save progress: " + e.message); }
 }
 function load() { try { return JSON.parse(localStorage.getItem("scanguide") || "null"); } catch (e) { return null; } }
 
@@ -350,7 +351,10 @@ $("b-sensors").onclick = startSensors;
 // ---------------------------------------------------------------- markers (AprilTag 36h11)
 // Sizes are fixed per ID (see marker_spec.json). Mat: object in the middle, FRONT = top of the sheet.
 const INM = 0.0254;
-const TAG_SIZE = { 0: INM, 1: INM, 2: INM, 3: INM, 4: INM, 5: INM, 6: INM, 7: INM, 10: 4 * INM, 20: 6 * INM, 21: 6 * INM, 22: 6 * INM, 23: 6 * INM };
+const TAG_SIZE = { 0: INM, 1: INM, 2: INM, 3: INM, 4: INM, 5: INM, 6: INM, 7: INM, 10: 4 * INM, 20: 6 * INM, 21: 6 * INM, 22: 6 * INM, 23: 6 * INM,
+  30: .032, 31: .032, 32: .032, 33: .032, 34: .032, 40: .024, 41: .024, 42: .024, 43: .024, 44: .024, 45: .024, 46: .024, 47: .024, 48: .024, 49: .024, 50: .024, 51: .024 };
+// turntable platter: tag corners (TL TR BR BL) in mm on the platter top, x right, y front
+const TT_LAYOUT = {"40":[[-12.0,92.0],[12.0,92.0],[12.0,68.0],[-12.0,68.0]],"41":[[35.608,85.674],[56.392,73.674],[44.392,52.89],[23.608,64.89]],"42":[[73.674,56.392],[85.674,35.608],[64.89,23.608],[52.89,44.392]],"43":[[92.0,12.0],[92.0,-12.0],[68.0,-12.0],[68.0,12.0]],"44":[[85.674,-35.608],[73.674,-56.392],[52.89,-44.392],[64.89,-23.608]],"45":[[56.392,-73.674],[35.608,-85.674],[23.608,-64.89],[44.392,-52.89]],"46":[[12.0,-92.0],[-12.0,-92.0],[-12.0,-68.0],[12.0,-68.0]],"47":[[-35.608,-85.674],[-56.392,-73.674],[-44.392,-52.89],[-23.608,-64.89]],"48":[[-73.674,-56.392],[-85.674,-35.608],[-64.89,-23.608],[-52.89,-44.392]],"49":[[-92.0,-12.0],[-92.0,12.0],[-68.0,12.0],[-68.0,-12.0]],"50":[[-85.674,35.608],[-73.674,56.392],[-52.89,44.392],[-64.89,23.608]],"51":[[-56.392,73.674],[-35.608,85.674],[-23.608,64.89],[-44.392,52.89]]};
 const MAT_C = { 0: [-82, 118], 1: [0, 118], 2: [82, 118], 3: [82, 0], 4: [82, -118], 5: [0, -118], 6: [-82, -118], 7: [-82, 0] };   // mm, x right, y front
 const TR = { det: null, dc: null, last: 0, fEst: [], pose: null, seen: [], quads: [], dw: 0, dh: 0 };
 // Working frame W is right-handed: x = front, y = LEFT, z = up (object frame has y = right).
@@ -361,6 +365,7 @@ function worldCorners(id) {
     const [mx, my] = MAT_C[id];
     return cs.map(([tx, ty]) => [(my / 1000 + ty), -(mx / 1000 + tx)]);
   }
+  if (S.ref === "turntable" && TT_LAYOUT[id]) return TT_LAYOUT[id].map(([x, y]) => [y / 1000, -x / 1000]);
   if (S.ref === "anchor" && S.anchor && id === S.anchor.id) {
     const [cx, cy] = S.anchor.c;                       // object centre in tag coordinates
     return cs.map(([tx, ty]) => [ty - cy, -(tx - cx)]);
@@ -450,12 +455,12 @@ function detectTick() {
   TR.pose = { C, fwd, R: p.R, t: p.t, f: fs, time: now, n: used.length, raw: p };
   // keep the compass in step: whenever tags are in view, they define the front
   const objYaw = (deg(Math.atan2(-fwd[1], fwd[0])) + 360) % 360;   // object frame: y right = -W.y, clockwise from front
-  if (S.heading != null && (S.ref === "mat" || S.anchor)) {
+  if (S.heading != null && (S.ref === "mat" || S.anchor)) {   // (not on a turntable: the platter turns, the phone doesn't)
     const est = (S.heading - objYaw + 360) % 360;
     S.front = S.front == null ? est : (S.front + wrap(est - S.front) * 0.15 + 360) % 360;
   }
 }
-function trackFresh() { return TR.pose && performance.now() - TR.pose.time < 700 && (S.ref === "mat" || S.anchor) ? TR.pose : null; }
+function trackFresh() { return TR.pose && performance.now() - TR.pose.time < 700 && (S.ref === "mat" || S.ref === "turntable" || S.anchor) ? TR.pose : null; }
 function objPos(p) { return [p.C[0], -p.C[1], p.C[2]]; }      // W -> object frame (y right)
 function drawTags(canvas, v) {
   const ctx = canvas.getContext("2d"), W = canvas.width = canvas.clientWidth * devicePixelRatio, H = canvas.height = canvas.clientHeight * devicePixelRatio;
@@ -483,7 +488,7 @@ function locateObject() {
 setInterval(() => { try { detectTick(); } catch (e) { } }, 60);
 
 // ---------------------------------------------------------------- calibrate
-document.addEventListener("change", e => { if (e.target.name === "ref") { S.ref = e.target.value; S.anchor = null; TR.pose = null; save(); } });
+document.addEventListener("change", e => { if (e.target.name === "ref") { S.ref = e.target.value; S.anchor = null; S.tt = null; TR.pose = null; save(); } });
 $("b-tocal").onclick = () => { if (!S.shots.length) return toast("No shot groups selected"); show("s-cal"); };
 function calSetup() {
   const r = S.ref, mk = r !== "none";
@@ -491,7 +496,8 @@ function calSetup() {
   $("cal-compass").style.display = mk ? "none" : "";
   $("b-locate").style.display = r === "anchor" ? "" : "none";
   $("b-setfront").textContent = r === "none" ? "This is the front" : "Start shooting";
-  $("cal-text").innerHTML = r === "mat" ? "Put the object in the middle of the <b>scan mat</b>, FRONT arrow pointing the way it faces. Point the camera at the mat: the tags light up green." :
+  $("cal-text").innerHTML = r === "turntable" ? "Object in the middle of the <b>turntable</b>, plain background behind it. Put the phone on a tripod a little above the platter, aimed at the object, with several platter tags in view." :
+    r === "mat" ? "Put the object in the middle of the <b>scan mat</b>, FRONT arrow pointing the way it faces. Point the camera at the mat: the tags light up green." :
     r === "anchor" ? "Lay the <b>anchor tag</b> flat on the ground in front of the object, arrow pointing the way the object faces. Then, with the tag in view, put the crosshair on the middle of the object's base and tap <b>Locate object</b>." :
     "Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.";
   if (S.cam) $("v2").srcObject = S.cam;
@@ -502,7 +508,7 @@ function calLoop() {
     const p = trackFresh(), ctx = drawTags($("hud2"), $("v2")), W = $("hud2").width, H = $("hud2").height;
     ctx.strokeStyle = "#ffffffcc"; ctx.lineWidth = 2 * devicePixelRatio; ctx.beginPath(); ctx.arc(W / 2, H / 2, 14 * devicePixelRatio, 0, 7);
     ctx.moveTo(W / 2 - 24 * devicePixelRatio, H / 2); ctx.lineTo(W / 2 + 24 * devicePixelRatio, H / 2); ctx.moveTo(W / 2, H / 2 - 24 * devicePixelRatio); ctx.lineTo(W / 2, H / 2 + 24 * devicePixelRatio); ctx.stroke();
-    const ok = S.ref === "mat" ? !!p : !!S.anchor && !!p;
+    const ok = S.ref === "mat" || S.ref === "turntable" ? !!p : !!S.anchor && !!p;
     $("t-mk").textContent = TR.seen.length ? `${TR.seen.length} tag${TR.seen.length > 1 ? "s" : ""} in view` + (ok ? " ✓" : "") : (TR.quads.length ? "Tags seen, but not the expected ones" : "Looking for markers…");
     $("t-mk").className = "status " + (ok ? "ok" : "warn");
     if (p) { const o = objPos(p); $("t-mk2").textContent = `Phone is ${fmtLen(Math.hypot(o[0], o[1]))} from the object's centre, ${fmtLen(o[2])} up` + (TR.fEst.length >= 6 ? " · lens calibrated" : ""); }
@@ -515,6 +521,10 @@ function calLoop() {
 }
 $("b-locate").onclick = locateObject;
 $("b-setfront").onclick = () => {
+  if (S.ref === "turntable") {
+    if (!trackFresh()) return toast("No platter tags in view yet");
+    S.tt = S.tt || { ring: 1, slots: {} }; save(); goShoot(); return;
+  }
   if (S.ref !== "none") {
     const p = trackFresh(); if (!p) return toast("No markers in view yet");
     const o = objPos(p); startNearMe((deg(Math.atan2(o[1], o[0])) + 360) % 360);
@@ -566,6 +576,7 @@ function startNearMe(ang) {
 function goShoot() { show("s-shoot"); }
 
 function render() {
+  if (S.ref === "turntable") { $("b-phase").style.display = ""; $("b-phase").textContent = "Next ring"; $("b-shoot").textContent = "Shoot now"; return; }
   const s = S.shots[S.idx]; if (!s) return;
   const g = shotGeom(s);
   $("t-prog").textContent = `${S.idx + 1} / ${S.shots.length}`;
@@ -621,12 +632,82 @@ function aimError() {
   return { yaw: wrap(want - S.heading), pitch: s.pitch - S.pitch };
 }
 
+// ---------------------------------------------------------------- turntable
+const TT_SLOTS = 24, TT_RINGS = [{ elev: 10, say: "a little above the platter, level-ish" }, { elev: 35, say: "higher, tilted down about 35°" }, { elev: 60, say: "well above, tilted down about 60°" }, { elev: -5, say: "low, level with the platter (catches the underside edges)" }];
+function ttState(tp) {
+  // raw pose: the smoothing lags a platter that has just stopped
+  const o = objPos(tp.raw || tp), ang = ((deg(Math.atan2(o[1], o[0])) % 360) + 360) % 360;
+  const elev = deg(Math.atan2(o[2], Math.hypot(o[0], o[1])));
+  return { o, ang, elev, slot: Math.floor(ang / (360 / TT_SLOTS)) % TT_SLOTS };
+}
+function turntableStep(tp) {
+  const tt = S.tt || (S.tt = { ring: 1, slots: {} }), key = "r" + tt.ring, got = tt.slots[key] || (tt.slots[key] = []);
+  const ring = TT_RINGS[Math.min(tt.ring, TT_RINGS.length) - 1];
+  $("t-prog").textContent = `ring ${tt.ring} · ${got.length} / ${TT_SLOTS}`; $("t-grp").textContent = "turntable";
+  $("t-stand").innerHTML = `Phone on the tripod <b>${ring.say}</b>. Turn the platter a little at a time; it shoots each new 15° step when the platter is still.`;
+  if (!tp) {
+    $("t-turn").textContent = "–"; $("t-tilt").textContent = "–";
+    $("t-status").textContent = "Platter tags not in view: aim at the platter"; $("t-status").className = "status warn";
+    drawTurntable(null, got); return;
+  }
+  const st = ttState(tp), now = performance.now();
+  // still = every reading in the last 0.5 s within 1.2° of the current one (single frames jitter too much)
+  const hist = S.ttHist || (S.ttHist = []);
+  if (!hist.length || hist[hist.length - 1].t !== tp.time) hist.push({ t: tp.time, ang: st.ang });
+  while (hist.length && now - hist[0].t > 1500) hist.shift();
+  const recent = hist.filter(h => now - h.t < 500), span = Math.max(0, ...recent.map(h => Math.abs(wrap(h.ang - st.ang))));
+  const still = recent.length >= 3 && hist[0].t < now - 450 && span < 1.2 && now - (S.ttHold || 0) > 0;
+  $("t-turn").textContent = `${Math.round(st.ang)}°`;
+  $("t-tilt").textContent = `${Math.round(st.elev)}° up` + (Math.abs(st.elev - ring.elev) > 12 ? ` (aim ${ring.elev}°)` : " ✓");
+  const need = !got.includes(st.slot);
+  if (got.length >= TT_SLOTS) {
+    $("t-status").textContent = tt.ring < TT_RINGS.length ? `Ring ${tt.ring} done. Move the phone ${TT_RINGS[tt.ring].say}, then tap Next ring.` : "All rings done: export from ☰";
+    $("t-status").className = "status ok";
+  } else {
+    $("t-status").textContent = need ? (still ? "Holding still: shooting…" : "Stop turning for a moment") : "Turn the platter to the next empty step";
+    $("t-status").className = "status " + (need ? "ok" : "warn");
+    if (need && still && $("k-auto").checked && !S.shooting) shootTurntable(st);
+  }
+  drawTurntable(st, got);
+}
+async function shootTurntable(st) {
+  const tt = S.tt, key = "r" + tt.ring;
+  S.shooting = true;
+  try {
+    const g = await grab(); if (!g) { S.shooting = false; return; }
+    const q = quality(g.canvas), hist = S.sharpHist, med = hist.length >= 3 ? [...hist].sort((a, b) => a - b)[hist.length >> 1] : null;
+    if (q.sharp < 6 || (med != null && q.sharp < 0.45 * med)) { S.ttHist = []; toast("Blurry: holding for a sharper one"); setTimeout(() => S.shooting = false, 300); return; }
+    hist.push(q.sharp); if (hist.length > 15) hist.shift();
+    if (q.glare > 0.03) toast(`Glare on ${Math.round(q.glare * 100)}% of the frame`);
+    const name = `${(S.plan.object || {}).name || "scan"}_R${tt.ring}_S${String(st.slot + 1).padStart(2, "0")}_${Date.now()}.jpg`;
+    const meta = { mode: "turntable", ring: tt.ring, slot: st.slot, platter_angle: +st.ang.toFixed(1), elevation: +st.elev.toFixed(1),
+      camera_in_object_frame_m: st.o.map(v => +v.toFixed(3)), quality: { sharpness: +q.sharp.toFixed(1), glare: +q.glare.toFixed(3) }, time: new Date().toISOString() };
+    await putPhoto({ id: S.key + "/tt/" + name, key: S.key, name, blob: g.blob, meta });
+    tt.slots[key].push(st.slot); save();
+    $("flash").style.opacity = .8; setTimeout(() => $("flash").style.opacity = 0, 120); if (navigator.vibrate) navigator.vibrate(30);
+  } catch (e) { toast("Shot failed: " + e.message); }
+  setTimeout(() => S.shooting = false, 350);
+}
+function drawTurntable(st, got) {
+  const c = $("map"), x = c.getContext("2d"), W = c.width, R = W / 2 - 12;
+  x.clearRect(0, 0, W, W); x.save(); x.translate(W / 2, W / 2);
+  for (let k = 0; k < TT_SLOTS; k++) {                      // 0° = front at the top, clockwise
+    const a0 = rad(k * 360 / TT_SLOTS - 90), a1 = rad((k + 1) * 360 / TT_SLOTS - 90) - 0.04;
+    x.strokeStyle = got.includes(k) ? "#37c26b" : "#3a4350"; x.lineWidth = 14; x.beginPath(); x.arc(0, 0, R, a0, a1); x.stroke();
+  }
+  if (st) { const a = rad(st.ang - 90); x.fillStyle = "#f2c037"; x.beginPath(); x.arc(Math.cos(a) * R, Math.sin(a) * R, 9, 0, 7); x.fill(); }
+  x.fillStyle = "#e8ecf1"; x.font = "bold 30px -apple-system,sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+  x.fillText(`${got.length}/${TT_SLOTS}`, 0, 0); x.restore();
+}
+function nextRing() { if (!S.tt) return; S.tt.ring++; save(); toast(`Ring ${S.tt.ring}: ${TT_RINGS[Math.min(S.tt.ring, TT_RINGS.length) - 1].say}`); }
+
 function loop() {
   if (!$("s-shoot").classList.contains("on")) return;
   const hud = $("hud"), ctx = drawTags(hud, $("v"));
   const W = hud.width, H = hud.height;
   const s = S.shots[S.idx];
   const tp = trackFresh();
+  if (S.ref === "turntable") { turntableStep(tp); requestAnimationFrame(loop); return; }
   let e = aimError();
   S.livePos = null; S.posOk = true;
   if (tp && s) {
@@ -751,8 +832,8 @@ function setPhase(p) {
   $("b-phase").textContent = p === "walk" ? "Aim ▸" : "◂ Walk";
   $("b-phase").style.display = s && needsWalk(s) && S.front != null ? "" : "none";
 }
-$("b-phase").onclick = () => setPhase(S.phase === "walk" ? "aim" : "walk");
-$("b-shoot").onclick = () => shoot(false);
+$("b-phase").onclick = () => S.ref === "turntable" ? nextRing() : setPhase(S.phase === "walk" ? "aim" : "walk");
+$("b-shoot").onclick = () => { if (S.ref === "turntable") { const tp = trackFresh(); if (tp) shootTurntable(ttState(tp)); else toast("Platter tags not in view"); } else shoot(false); };
 $("b-prev").onclick = () => { if (S.idx > 0) { S.idx--; save(); render(); } };
 $("b-next").onclick = () => { if (S.idx < S.shots.length - 1) { S.idx++; save(); render(); } };
 
@@ -816,7 +897,7 @@ function initLoad() {
     $("t-resume").textContent = `${(st.plan.object || {}).name || "plan"}: ${n} of ${st.plan.shots.length} shots done`;
   }
 }
-$("b-resume").addEventListener("click", () => { const st = load(); Object.assign(S, { plan: st.plan, key: st.key, idx: st.idx || 0, groups: st.groups, front: st.front, done: st.done || {}, ref: st.ref || "none", anchor: st.anchor || null }); refreshShots(); }, true);
+$("b-resume").addEventListener("click", () => { const st = load(); Object.assign(S, { plan: st.plan, key: st.key, idx: st.idx || 0, groups: st.groups, front: st.front, done: st.done || {}, ref: st.ref || "none", anchor: st.anchor || null, tt: st.tt || null }); refreshShots(); }, true);
 history.replaceState({ s: "s-load" }, "");
 openDB().then(initLoad).catch(e => toast("Storage unavailable: " + e.message));
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
