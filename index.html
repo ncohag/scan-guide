@@ -27,8 +27,8 @@ h2{font-size:17px;margin:0}
 .top{display:flex;align-items:center;gap:10px}
 .pill{display:inline-block;padding:2px 8px;border-radius:99px;background:#2a313b;font-size:12px;color:var(--dim)}
 input[type=file]{display:none}
-#cam{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3}
-#cam video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.camwrap{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:3/4;max-height:62vh;max-width:calc(62vh * var(--ar, .75));margin:0 auto}
+.camwrap video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
 .hud{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #flash{position:absolute;inset:0;background:#fff;opacity:0;transition:opacity .25s;pointer-events:none}
 .meter{height:10px;background:#2a313b;border-radius:6px;position:relative;overflow:hidden}
@@ -117,11 +117,11 @@ label.chk{display:flex;align-items:center;gap:8px}
 <!-- 3. calibrate -->
 <section class="screen" id="s-cal">
   <div class="top"><button class="back" data-back>‹ Back</button><h1 style="margin:0">Calibrate</h1></div>
+  <div id="cam2" class="camwrap"><canvas class="hud" id="hud2"></canvas><div id="camtap" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;color:#fff;font-weight:600;text-align:center;padding:20px">Tap to start the camera</div></div>
   <div class="card">
     <p id="cal-text">Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.</p>
     <p class="small dim">Everything after this is measured from that direction, so no compass bearings are needed. Recalibrate if the guidance starts to drift.</p>
   </div>
-  <div id="cam2" style="position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3"><video id="v2" playsinline muted autoplay style="width:100%;height:100%;object-fit:cover;display:block;background:#000"></video><canvas class="hud" id="hud2"></canvas></div>
   <div class="card" id="cal-marker" style="display:none"><div class="status" id="t-mk">Looking for markers…</div><div class="small dim" id="t-mk2"></div></div>
   <div class="card" id="cal-compass"><div class="row"><div><div class="dim small">Camera heading</div><div class="big" id="t-calhead">–</div></div><div><div class="dim small">Tilt</div><div class="big" id="t-calpitch">–</div></div></div></div>
   <button class="ok" id="b-locate" style="display:none">Locate object (crosshair on its base)</button>
@@ -132,7 +132,7 @@ label.chk{display:flex;align-items:center;gap:8px}
 <!-- 4. shoot -->
 <section class="screen" id="s-shoot">
   <div class="top"><button class="back" data-back>‹ Back</button><div style="flex:1"><span class="pill" id="t-prog">0 / 0</span> <span class="pill" id="t-grp"></span></div><button id="b-menu" style="flex:0 0 auto">☰</button></div>
-  <div id="cam"><video id="v" playsinline muted autoplay></video><canvas class="hud" id="hud"></canvas><div id="flash"></div></div>
+  <div id="cam" class="camwrap"><video id="v" playsinline muted autoplay></video><canvas class="hud" id="hud"></canvas><div id="flash"></div></div>
   <div class="card">
     <div class="row" style="align-items:flex-start">
       <div><div class="dim small">Stand</div><div id="t-stand" style="font-weight:600"></div></div>
@@ -210,7 +210,7 @@ function load() { try { return JSON.parse(localStorage.getItem("scanguide") || "
 function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove("on"), 2200); }
 // Navigation. Each screen change is pushed onto the history, so the on-screen ‹ Back buttons and
 // the iPhone's swipe-back gesture do the same thing.
-const ENTER = { "s-load": () => initLoad(), "s-cal": () => { calSetup(); calLoop(); }, "s-shoot": () => { render(); loop(); } };
+const ENTER = { "s-load": () => initLoad(), "s-cal": () => { calSetup(); calLoop(); }, "s-shoot": () => { attachCam("cam"); render(); loop(); } };
 function show(id, push = true) {
   const cur = document.querySelector(".screen.on");
   if (cur && cur.id === id) return;
@@ -340,12 +340,31 @@ async function startSensors() {
   } catch (e) { msg.push("motion ✗ (" + e.message + ")"); S.sim = true; $("sim").classList.add("on"); }
   try {
     S.cam = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 4032 }, height: { ideal: 3024 } } });
-    $("v").srcObject = S.cam; $("v2").srcObject = S.cam; S.track = S.cam.getVideoTracks()[0];
+    $("v").srcObject = S.cam; S.track = S.cam.getVideoTracks()[0];
     const st = S.track.getSettings(); msg.push(`camera ✓ ${st.width}×${st.height}`);
   } catch (e) { msg.push("camera ✗ (" + e.message + ")"); }
   $("t-sensors").textContent = msg.join(" · ");
 }
 $("b-sensors").onclick = startSensors;
+// one <video> shared by both screens: iOS won't reliably play one stream in two elements
+async function ensureCam() {
+  if (S.cam && S.cam.active) return true;
+  try {
+    S.cam = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 4032 }, height: { ideal: 3024 } } });
+    $("v").srcObject = S.cam; S.track = S.cam.getVideoTracks()[0]; return true;
+  } catch (e) { toast("Camera: " + e.message); return false; }
+}
+async function attachCam(boxId) {
+  const box = $(boxId), v = $("v");
+  if (v.parentNode !== box) box.insertBefore(v, box.firstChild);
+  await ensureCam();
+  const fit = () => { if (v.videoWidth) document.querySelectorAll(".camwrap").forEach(b => { b.style.aspectRatio = v.videoWidth + "/" + v.videoHeight; b.style.setProperty("--ar", v.videoWidth / v.videoHeight); }); };
+  v.onloadedmetadata = fit; v.onresize = fit; fit();
+  const tap = $("camtap");
+  try { await v.play(); if (tap) tap.style.display = "none"; }
+  catch (e) { if (tap && boxId === "cam2") { tap.style.display = "flex"; box.onclick = () => attachCam(boxId); } }
+}
+
 ["sim-h", "sim-p"].forEach(id => $(id).oninput = () => { S.lastMove = performance.now(); S.heading = +$("sim-h").value; S.pitch = +$("sim-p").value; });
 
 // ---------------------------------------------------------------- markers (AprilTag 36h11)
@@ -424,7 +443,7 @@ function poseFromH(H, f, cx, cy) {
   const fwd = [R[2][0], R[2][1], R[2][2]];                                              // camera +z in world
   return { C, fwd, R, t };
 }
-function activeVideo() { return $("s-cal").classList.contains("on") ? $("v2") : $("v"); }
+function activeVideo() { return $("v"); }
 function detectTick() {
   if (S.ref === "none" || typeof AR === "undefined") return;
   const v = activeVideo(), now = performance.now();
@@ -500,14 +519,15 @@ function calSetup() {
     r === "mat" ? "Put the object in the middle of the <b>scan mat</b>, FRONT arrow pointing the way it faces. Point the camera at the mat: the tags light up green." :
     r === "anchor" ? "Lay the <b>anchor tag</b> flat on the ground in front of the object, arrow pointing the way the object faces. Then, with the tag in view, put the crosshair on the middle of the object's base and tap <b>Locate object</b>." :
     "Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.";
-  if (S.cam) $("v2").srcObject = S.cam;
+  attachCam("cam2");
 }
 function calLoop() {
   if (!$("s-cal").classList.contains("on")) return;
-  if (S.ref !== "none") {
-    const p = trackFresh(), ctx = drawTags($("hud2"), $("v2")), W = $("hud2").width, H = $("hud2").height;
+  { const ctx = drawTags($("hud2"), $("v")), W = $("hud2").width, H = $("hud2").height;
     ctx.strokeStyle = "#ffffffcc"; ctx.lineWidth = 2 * devicePixelRatio; ctx.beginPath(); ctx.arc(W / 2, H / 2, 14 * devicePixelRatio, 0, 7);
-    ctx.moveTo(W / 2 - 24 * devicePixelRatio, H / 2); ctx.lineTo(W / 2 + 24 * devicePixelRatio, H / 2); ctx.moveTo(W / 2, H / 2 - 24 * devicePixelRatio); ctx.lineTo(W / 2, H / 2 + 24 * devicePixelRatio); ctx.stroke();
+    ctx.moveTo(W / 2 - 24 * devicePixelRatio, H / 2); ctx.lineTo(W / 2 + 24 * devicePixelRatio, H / 2); ctx.moveTo(W / 2, H / 2 - 24 * devicePixelRatio); ctx.lineTo(W / 2, H / 2 + 24 * devicePixelRatio); ctx.stroke(); }
+  if (S.ref !== "none") {
+    const p = trackFresh();
     const ok = S.ref === "mat" || S.ref === "turntable" ? !!p : !!S.anchor && !!p;
     $("t-mk").textContent = TR.seen.length ? `${TR.seen.length} tag${TR.seen.length > 1 ? "s" : ""} in view` + (ok ? " ✓" : "") : (TR.quads.length ? "Tags seen, but not the expected ones" : "Looking for markers…");
     $("t-mk").className = "status " + (ok ? "ok" : "warn");

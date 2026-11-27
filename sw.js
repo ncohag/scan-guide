@@ -1,5 +1,5 @@
 // Offline cache: once opened with a signal, the guide keeps working without one.
-const C = "scanguide-v4";
+const C = "scanguide-v5";
 self.addEventListener("install", e => e.waitUntil(caches.open(C).then(c => c.addAll(["./", "./index.html", "./vendor/cv.js", "./vendor/aruco.js", "./vendor/apriltag_36h11.js"])).then(() => self.skipWaiting())));
 self.addEventListener("activate", e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== C).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener("fetch", e => {
