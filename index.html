@@ -23,6 +23,8 @@ h2{font-size:17px;margin:0}
 .dim{color:var(--dim)} .small{font-size:13px}
 .row{display:flex;gap:10px;align-items:center}
 .row>*{flex:1}
+.back{flex:0 0 auto;padding:8px 12px;border-radius:10px;background:transparent;border:1px solid var(--line);color:var(--acc);font-weight:600}
+.top{display:flex;align-items:center;gap:10px}
 .pill{display:inline-block;padding:2px 8px;border-radius:99px;background:#2a313b;font-size:12px;color:var(--dim)}
 input[type=file]{display:none}
 #cam{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:4/3}
@@ -69,7 +71,7 @@ label.chk{display:flex;align-items:center;gap:8px}
 
 <!-- 2. setup -->
 <section class="screen" id="s-setup">
-  <h1 id="t-name">Plan</h1>
+  <div class="top"><button class="back" data-back>‹ Back</button><h1 id="t-name" style="margin:0">Plan</h1></div>
   <div class="card small" id="t-summary"></div>
   <div class="card">
     <h2>Which shots</h2>
@@ -86,7 +88,7 @@ label.chk{display:flex;align-items:center;gap:8px}
 
 <!-- 3. calibrate -->
 <section class="screen" id="s-cal">
-  <h1>Calibrate</h1>
+  <div class="top"><button class="back" data-back>‹ Back</button><h1 style="margin:0">Calibrate</h1></div>
   <div class="card">
     <p>Stand behind the object and point the <b>back camera along its front direction</b>: for a cannon, sight along the barrel toward the muzzle, phone level.</p>
     <p class="small dim">Everything after this is measured from that direction, so no compass bearings are needed. Recalibrate if the guidance starts to drift.</p>
@@ -98,7 +100,7 @@ label.chk{display:flex;align-items:center;gap:8px}
 
 <!-- 4. shoot -->
 <section class="screen" id="s-shoot">
-  <div class="row" style="flex:0"><div><span class="pill" id="t-prog">0 / 0</span> <span class="pill" id="t-grp"></span></div><button id="b-menu" style="flex:0 0 auto">☰</button></div>
+  <div class="top"><button class="back" data-back>‹ Back</button><div style="flex:1"><span class="pill" id="t-prog">0 / 0</span> <span class="pill" id="t-grp"></span></div><button id="b-menu" style="flex:0 0 auto">☰</button></div>
   <div id="cam"><video id="v" playsinline muted autoplay></video><canvas class="hud" id="hud"></canvas><div id="flash"></div></div>
   <div class="card">
     <div class="row" style="align-items:flex-start">
@@ -129,7 +131,7 @@ label.chk{display:flex;align-items:center;gap:8px}
 
 <!-- 5. menu -->
 <section class="screen" id="s-menu">
-  <div class="row" style="flex:0"><h1>Shots</h1><button id="b-close" style="flex:0 0 auto">✕</button></div>
+  <div class="top"><button class="back" id="b-close">‹ Back</button><h1 style="margin:0">Shots</h1></div>
   <div class="small dim" id="t-stats"></div>
   <div class="list" id="list"></div>
   <div class="row"><button id="b-recal">Recalibrate</button><button class="pri" id="b-export">Export photos</button></div>
@@ -170,7 +172,34 @@ function save() {
 function load() { try { return JSON.parse(localStorage.getItem("scanguide") || "null"); } catch (e) { return null; } }
 
 function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove("on"), 2200); }
-function show(id) { document.querySelectorAll(".screen").forEach(s => s.classList.toggle("on", s.id === id)); }
+// Navigation. Each screen change is pushed onto the history, so the on-screen ‹ Back buttons and
+// the iPhone's swipe-back gesture do the same thing.
+const ENTER = { "s-load": () => initLoad(), "s-cal": () => calLoop(), "s-shoot": () => { render(); loop(); } };
+function show(id, push = true) {
+  const cur = document.querySelector(".screen.on");
+  if (cur && cur.id === id) return;
+  document.querySelectorAll(".screen").forEach(s => s.classList.toggle("on", s.id === id));
+  if (push) history.pushState({ s: id }, "");
+  (ENTER[id] || (() => {}))();
+}
+const BACK = {
+  "s-setup": () => "s-load",
+  "s-cal": () => (S.front != null && S.shots.length ? "s-shoot" : "s-setup"),
+  "s-shoot": () => "s-setup",
+  "s-menu": () => "s-shoot",
+};
+function goBack() {
+  const cur = document.querySelector(".screen.on").id;
+  if (history.state && history.state.s && history.length > 1 && cur !== "s-load") { history.back(); return; }
+  const to = (BACK[cur] || (() => "s-load"))();
+  show(to);
+}
+window.addEventListener("popstate", e => {
+  const target = (e.state && e.state.s) || "s-load";
+  if (target !== "s-load" && !S.plan) { show("s-load", false); return; }   // nothing loaded (e.g. after a reload)
+  show(target, false);
+});
+document.addEventListener("click", e => { if (e.target.closest("[data-back]")) goBack(); });
 
 // ---------------------------------------------------------------- plans
 function demoPlan() {
@@ -250,7 +279,7 @@ $("b-sensors").onclick = startSensors;
 ["sim-h", "sim-p"].forEach(id => $(id).oninput = () => { S.lastMove = performance.now(); S.heading = +$("sim-h").value; S.pitch = +$("sim-p").value; });
 
 // ---------------------------------------------------------------- calibrate
-$("b-tocal").onclick = () => { if (!S.shots.length) return toast("No shot groups selected"); show("s-cal"); calLoop(); };
+$("b-tocal").onclick = () => { if (!S.shots.length) return toast("No shot groups selected"); show("s-cal"); };
 function calLoop() {
   if (!$("s-cal").classList.contains("on")) return;
   $("t-calhead").textContent = S.heading == null ? "–" : Math.round(S.heading) + "°";
@@ -279,7 +308,7 @@ function sideWord(a) {
   const names = ["in front", "front-right", "on the right side", "back-right", "behind", "back-left", "on the left side", "front-left"];
   return names[Math.round(a / 45) % 8];
 }
-function goShoot() { show("s-shoot"); render(); loop(); }
+function goShoot() { show("s-shoot"); }
 
 function render() {
   const s = S.shots[S.idx]; if (!s) return;
@@ -382,13 +411,13 @@ $("b-menu").onclick = async () => {
   const n = S.shots.filter(s => S.done[shotKey(s)]).length, ph = (await allPhotos()).filter(p => p.key === S.key).length;
   $("t-stats").textContent = `${n} of ${S.shots.length} shots done · ${ph} photos stored`;
   $("list").innerHTML = S.shots.map((s, i) => `<div data-i="${i}" class="${S.done[shotKey(s)] ? "done" : ""} ${i === S.idx ? "cur" : ""}"><span>${s.id}</span><span class="dim small">${s.group || ""} · ${s.z.toFixed(1)} m · ${Math.round(shotGeom(s).ang)}°</span></div>`).join("");
-  $("list").querySelectorAll("div").forEach(d => d.onclick = () => { S.idx = +d.dataset.i; save(); goShoot(); });
+  $("list").querySelectorAll("div").forEach(d => d.onclick = () => { S.idx = +d.dataset.i; save(); goBack(); });
   show("s-menu");
   const cur = $("list").querySelector(".cur"); if (cur) cur.scrollIntoView({ block: "center" });
 };
-$("b-close").onclick = goShoot;
-$("b-recal").onclick = () => { show("s-cal"); calLoop(); };
-$("b-home").onclick = () => { show("s-load"); initLoad(); };
+$("b-close").onclick = goBack;
+$("b-recal").onclick = () => { show("s-cal"); };
+$("b-home").onclick = () => { show("s-load"); };
 
 // ---------------------------------------------------------------- export (zip, store-only)
 const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
@@ -438,6 +467,7 @@ function initLoad() {
   }
 }
 $("b-resume").addEventListener("click", () => { const st = load(); Object.assign(S, { plan: st.plan, key: st.key, idx: st.idx || 0, groups: st.groups, front: st.front, done: st.done || {} }); refreshShots(); }, true);
+history.replaceState({ s: "s-load" }, "");
 openDB().then(initLoad).catch(e => toast("Storage unavailable: " + e.message));
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 if (new URLSearchParams(location.search).has("sim")) { S.sim = true; $("sim").classList.add("on"); }
